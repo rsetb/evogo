@@ -1,0 +1,349 @@
+# =============================================================================
+# Evo CRM Community — Easypanel (Compose)
+#
+# Substitua antes de fazer deploy:
+#   evocrm-gateway.znvdsb.easypanel.host      → domínio público da API    ex: api.seusite.com.br
+#   evocrm-evocrm.znvdsb.easypanel.host → domínio público do CRM    ex: crm.seusite.com.br
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL com pgvector
+  # ---------------------------------------------------------------------------
+  evocrm_postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: evocrm
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 0d554e7b205611cb0cdaeeb8f6c2a2a5
+    volumes:
+      - evocrm_postgres:/var/lib/postgresql/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # Redis
+  # ---------------------------------------------------------------------------
+  evocrm_redis:
+    image: redis:latest
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - evocrm_redis:/data
+    networks:
+      - internal
+
+  # ---------------------------------------------------------------------------
+  # Auth Service
+  # ---------------------------------------------------------------------------
+  evocrm_auth:
+    image: evoapicloud/evo-auth-service-community:latest
+    restart: unless-stopped
+    command: bash -c "bundle exec rails db:migrate 2>&1 || echo 'Migration errors, continuing...'; bundle exec rails s -p 3001 -b 0.0.0.0"
+    networks:
+      - internal
+    depends_on:
+      evocrm_postgres:
+        condition: service_healthy
+    environment:
+      - RAILS_ENV=production
+      - RAILS_MAX_THREADS=5
+      - SECRET_KEY_BASE=51464ffdfb55af38cd31a9fd0c372ba71fc709d64b8d8834d23cf804d86995f864939a91f22519292017e6cfd425a2d439c5c37eb3ad81428f834059fe3ae4a6
+      - JWT_SECRET_KEY=3505677cf8caf77644b482103563d393cb2e50067301b18f3274ccfee7330619
+      - EVOAI_CRM_API_TOKEN=4c2fcb98-ec7c-6288-16e3-19bf8b7fd2b2
+      - POSTGRES_HOST=evocrm_postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USERNAME=postgres
+      - POSTGRES_PASSWORD=0d554e7b205611cb0cdaeeb8f6c2a2a5
+      - POSTGRES_DATABASE=evocrm
+      - POSTGRES_SSLMODE=disable
+      - REDIS_URL=redis://evocrm_redis:6379/1
+      - FRONTEND_URL=https://evocrm-evocrm.znvdsb.easypanel.host
+      - AUTH_SERVICE_URL=https://evocrm-gateway.znvdsb.easypanel.host
+      - BACKEND_URL=https://evocrm-gateway.znvdsb.easypanel.host
+      - CORS_ORIGINS=https://evocrm-evocrm.znvdsb.easypanel.host,https://evocrm-gateway.znvdsb.easypanel.host
+      - DOORKEEPER_JWT_SECRET_KEY=5d768e4276bff366479e8dbad93d0353ae23458e36d2f07eab1223252ab40cf2
+      - DOORKEEPER_JWT_ALGORITHM=hs256
+      - DOORKEEPER_JWT_ISS=evo-auth-service
+      - MFA_ISSUER=EvoCRM
+      - SIDEKIQ_CONCURRENCY=10
+      - ACTIVE_STORAGE_SERVICE=local
+      - OAUTH_TOKEN_EXPIRES_IN=28800
+      - MAILER_SENDER_EMAIL=noreply@evocrm.local
+      - SMTP_ADDRESS=localhost
+      - SMTP_PORT=1025
+      - SMTP_DOMAIN=evocrm.local
+      - SMTP_AUTHENTICATION=plain
+      - SMTP_ENABLE_STARTTLS_AUTO=false
+
+  # ---------------------------------------------------------------------------
+  # Auth Sidekiq (background jobs)
+  # ---------------------------------------------------------------------------
+  evocrm_auth_sidekiq:
+    image: evoapicloud/evo-auth-service-community:latest
+    restart: unless-stopped
+    command: ["bundle", "exec", "sidekiq", "-C", "config/sidekiq.yml"]
+    networks:
+      - internal
+    depends_on:
+      - evocrm_postgres
+      - evocrm_redis
+    environment:
+      - RAILS_ENV=production
+      - SECRET_KEY_BASE=51464ffdfb55af38cd31a9fd0c372ba71fc709d64b8d8834d23cf804d86995f864939a91f22519292017e6cfd425a2d439c5c37eb3ad81428f834059fe3ae4a6
+      - JWT_SECRET_KEY=3505677cf8caf77644b482103563d393cb2e50067301b18f3274ccfee7330619
+      - EVOAI_CRM_API_TOKEN=4c2fcb98-ec7c-6288-16e3-19bf8b7fd2b2
+      - POSTGRES_HOST=evocrm_postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USERNAME=postgres
+      - POSTGRES_PASSWORD=0d554e7b205611cb0cdaeeb8f6c2a2a5
+      - POSTGRES_DATABASE=evocrm
+      - POSTGRES_SSLMODE=disable
+      - REDIS_URL=redis://evocrm_redis:6379/1
+      - FRONTEND_URL=https://evocrm-evocrm.znvdsb.easypanel.host
+      - BACKEND_URL=https://evocrm-gateway.znvdsb.easypanel.host
+      - CORS_ORIGINS=https://evocrm-evocrm.znvdsb.easypanel.host,https://evocrm-gateway.znvdsb.easypanel.host
+      - DOORKEEPER_JWT_SECRET_KEY=5d768e4276bff366479e8dbad93d0353ae23458e36d2f07eab1223252ab40cf2
+      - DOORKEEPER_JWT_ALGORITHM=hs256
+      - DOORKEEPER_JWT_ISS=evo-auth-service
+      - MFA_ISSUER=EvoCRM
+      - SIDEKIQ_CONCURRENCY=10
+      - ACTIVE_STORAGE_SERVICE=local
+      - OAUTH_TOKEN_EXPIRES_IN=28800
+
+  # ---------------------------------------------------------------------------
+  # CRM Service
+  # ---------------------------------------------------------------------------
+  evocrm_crm:
+    image: evoapicloud/evo-ai-crm-community:latest
+    restart: unless-stopped
+    command: sh -c "until wget -qO- http://evocrm_auth:3001/health >/dev/null 2>&1; do echo 'Waiting for auth...'; sleep 5; done; bundle exec rails db:migrate 2>&1 || echo 'Migration errors, continuing...'; bundle exec rails s -p 3000 -b 0.0.0.0"
+    networks:
+      - internal
+    depends_on:
+      - evocrm_postgres
+      - evocrm_redis
+      - evocrm_auth
+    environment:
+      - RAILS_ENV=production
+      - RAILS_SERVE_STATIC_FILES=true
+      - RAILS_LOG_TO_STDOUT=true
+      - SECRET_KEY_BASE=51464ffdfb55af38cd31a9fd0c372ba71fc709d64b8d8834d23cf804d86995f864939a91f22519292017e6cfd425a2d439c5c37eb3ad81428f834059fe3ae4a6
+      - JWT_SECRET_KEY=3505677cf8caf77644b482103563d393cb2e50067301b18f3274ccfee7330619
+      - EVOAI_CRM_API_TOKEN=4c2fcb98-ec7c-6288-16e3-19bf8b7fd2b2
+      - POSTGRES_HOST=evocrm_postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USERNAME=postgres
+      - POSTGRES_PASSWORD=0d554e7b205611cb0cdaeeb8f6c2a2a5
+      - POSTGRES_DATABASE=evocrm
+      - POSTGRES_SSLMODE=disable
+      - REDIS_URL=redis://evocrm_redis:6379/1
+      - EVO_AUTH_SERVICE_URL=http://evocrm_auth:3001
+      - EVO_AI_CORE_SERVICE_URL=http://evocrm_core:5555
+      - BACKEND_URL=https://evocrm-gateway.znvdsb.easypanel.host
+      - FRONTEND_URL=https://evocrm-evocrm.znvdsb.easypanel.host
+      - CORS_ORIGINS=https://evocrm-evocrm.znvdsb.easypanel.host,https://evocrm-gateway.znvdsb.easypanel.host
+      - DISABLE_TELEMETRY=true
+      - LOG_LEVEL=info
+      - ENABLE_ACCOUNT_SIGNUP=true
+      - ENABLE_PUSH_RELAY_SERVER=true
+      - ENABLE_INBOX_EVENTS=true
+      - BOT_RUNTIME_URL=http://evocrm_bot_runtime:8080
+      - BOT_RUNTIME_SECRET=56622ad39c50cd5b6e979f0f863778f17e00cf1447fb85819f0f5b7b180dd345
+      - BOT_RUNTIME_POSTBACK_BASE_URL=http://evocrm_crm:3000
+      - ACTIVE_STORAGE_SERVICE=local
+
+  # ---------------------------------------------------------------------------
+  # CRM Sidekiq (background jobs)
+  # ---------------------------------------------------------------------------
+  evocrm_crm_sidekiq:
+    image: evoapicloud/evo-ai-crm-community:latest
+    restart: unless-stopped
+    command: ["bundle", "exec", "sidekiq", "-C", "config/sidekiq.yml"]
+    networks:
+      - internal
+    depends_on:
+      - evocrm_postgres
+      - evocrm_redis
+    environment:
+      - RAILS_ENV=production
+      - SECRET_KEY_BASE=51464ffdfb55af38cd31a9fd0c372ba71fc709d64b8d8834d23cf804d86995f864939a91f22519292017e6cfd425a2d439c5c37eb3ad81428f834059fe3ae4a6
+      - JWT_SECRET_KEY=3505677cf8caf77644b482103563d393cb2e50067301b18f3274ccfee7330619
+      - EVOAI_CRM_API_TOKEN=4c2fcb98-ec7c-6288-16e3-19bf8b7fd2b2
+      - POSTGRES_HOST=evocrm_postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USERNAME=postgres
+      - POSTGRES_PASSWORD=0d554e7b205611cb0cdaeeb8f6c2a2a5
+      - POSTGRES_DATABASE=evocrm
+      - POSTGRES_SSLMODE=disable
+      - REDIS_URL=redis://evocrm_redis:6379/1
+      - EVO_AUTH_SERVICE_URL=http://evocrm_auth:3001
+      - EVO_AI_CORE_SERVICE_URL=http://evocrm_core:5555
+      - BACKEND_URL=https://evocrm-gateway.znvdsb.easypanel.host
+      - FRONTEND_URL=https://evocrm-evocrm.znvdsb.easypanel.host
+      - CORS_ORIGINS=https://evocrm-evocrm.znvdsb.easypanel.host,https://evocrm-gateway.znvdsb.easypanel.host
+      - BOT_RUNTIME_URL=http://evocrm_bot_runtime:8080
+      - BOT_RUNTIME_SECRET=56622ad39c50cd5b6e979f0f863778f17e00cf1447fb85819f0f5b7b180dd345
+      - BOT_RUNTIME_POSTBACK_BASE_URL=http://evocrm_crm:3000
+      - ACTIVE_STORAGE_SERVICE=local
+
+  # ---------------------------------------------------------------------------
+  # Core Service (Go)
+  # ---------------------------------------------------------------------------
+  evocrm_core:
+    image: evoapicloud/evo-ai-core-service-community:latest
+    restart: unless-stopped
+    networks:
+      - internal
+    depends_on:
+      evocrm_postgres:
+        condition: service_healthy
+    environment:
+      - DB_HOST=evocrm_postgres
+      - DB_PORT=5432
+      - DB_USER=postgres
+      - DB_PASSWORD=0d554e7b205611cb0cdaeeb8f6c2a2a5
+      - DB_NAME=evocrm
+      - DB_SSLMODE=disable
+      - DB_MAX_IDLE_CONNS=10
+      - DB_MAX_OPEN_CONNS=100
+      - DB_CONN_MAX_LIFETIME=1h
+      - DB_CONN_MAX_IDLE_TIME=30m
+      - PORT=5555
+      - SECRET_KEY_BASE=51464ffdfb55af38cd31a9fd0c372ba71fc709d64b8d8834d23cf804d86995f864939a91f22519292017e6cfd425a2d439c5c37eb3ad81428f834059fe3ae4a6
+      - JWT_SECRET_KEY=3505677cf8caf77644b482103563d393cb2e50067301b18f3274ccfee7330619
+      - JWT_ALGORITHM=HS256
+      - ENCRYPTION_KEY=LRf7NGO_Imef4eV6pylLn5fJX_Hhfh6fUvjXFpNEiR4=
+      - EVOLUTION_BASE_URL=http://evocrm_crm:3000
+      - EVO_AUTH_BASE_URL=http://evocrm_auth:3001
+      - AI_PROCESSOR_URL=http://evocrm_processor:8000
+      - AI_PROCESSOR_VERSION=v1
+
+  # ---------------------------------------------------------------------------
+  # Processor Service (Python / FastAPI)
+  # ---------------------------------------------------------------------------
+  evocrm_processor:
+    image: evoapicloud/evo-ai-processor-community:latest
+    restart: unless-stopped
+    command: sh -c "alembic upgrade head 2>&1 || echo 'Alembic errors, continuing...'; python -m scripts.run_seeders; uvicorn src.main:app --host $$HOST --port $$PORT"
+    volumes:
+      - evocrm_processor_logs:/app/logs
+    networks:
+      - internal
+    depends_on:
+      - evocrm_postgres
+      - evocrm_redis
+    environment:
+      - POSTGRES_CONNECTION_STRING=postgresql://postgres:0d554e7b205611cb0cdaeeb8f6c2a2a5@evocrm_postgres:5432/evocrm?sslmode=disable
+      - REDIS_HOST=evocrm_redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=
+      - REDIS_SSL=false
+      - REDIS_DB=1
+      - REDIS_KEY_PREFIX=a2a_
+      - REDIS_TTL=3600
+      - HOST=0.0.0.0
+      - PORT=8000
+      - DEBUG=false
+      - SECRET_KEY_BASE=51464ffdfb55af38cd31a9fd0c372ba71fc709d64b8d8834d23cf804d86995f864939a91f22519292017e6cfd425a2d439c5c37eb3ad81428f834059fe3ae4a6
+      - ENCRYPTION_KEY=LRf7NGO_Imef4eV6pylLn5fJX_Hhfh6fUvjXFpNEiR4=
+      - EVOAI_CRM_API_TOKEN=4c2fcb98-ec7c-6288-16e3-19bf8b7fd2b2
+      - EVO_AUTH_BASE_URL=http://evocrm_auth:3001
+      - EVO_AI_CRM_URL=http://evocrm_crm:3000
+      - CORE_SERVICE_URL=http://evocrm_core:5555/api/v1
+      - APP_URL=https://evocrm-gateway.znvdsb.easypanel.host
+      - API_URL=https://evocrm-gateway.znvdsb.easypanel.host
+      - API_TITLE=Agent Processor Community
+      - API_DESCRIPTION=Agent Processor Community for Evo AI
+      - API_VERSION=1.0.0
+      - ORGANIZATION_NAME=Evo CRM
+      - TOOLS_CACHE_ENABLED=true
+      - TOOLS_CACHE_TTL=3600
+
+  # ---------------------------------------------------------------------------
+  # Bot Runtime (Go)
+  # ---------------------------------------------------------------------------
+  evocrm_bot_runtime:
+    image: evoapicloud/evo-bot-runtime:latest
+    restart: unless-stopped
+    networks:
+      - internal
+    depends_on:
+      - evocrm_redis
+      - evocrm_processor
+    environment:
+      - LISTEN_ADDR=0.0.0.0:8080
+      - REDIS_URL=redis://evocrm_redis:6379/1
+      - AI_PROCESSOR_URL=http://evocrm_processor:8000
+      - BOT_RUNTIME_SECRET=56622ad39c50cd5b6e979f0f863778f17e00cf1447fb85819f0f5b7b180dd345
+      - AI_CALL_TIMEOUT_SECONDS=30
+
+  # ---------------------------------------------------------------------------
+  # Gateway (ponto de entrada público da API)
+  # ---------------------------------------------------------------------------
+  evocrm_gateway:
+    image: evoapicloud/evo-crm-gateway:latest
+    restart: unless-stopped
+    networks:
+      - internal
+      - easypanel
+    depends_on:
+      - evocrm_auth
+      - evocrm_crm
+    environment:
+      - AUTH_UPSTREAM=evocrm_auth:3001
+      - CRM_UPSTREAM=evocrm_crm:3000
+      - CORE_UPSTREAM=evocrm_core:5555
+      - PROCESSOR_UPSTREAM=evocrm_processor:8000
+      - BOT_RUNTIME_UPSTREAM=evocrm_bot_runtime:8080
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.evocrm-gateway.rule=Host(`evocrm-gateway.znvdsb.easypanel.host`)
+      - traefik.http.routers.evocrm-gateway.entrypoints=websecure
+      - traefik.http.routers.evocrm-gateway.tls.certresolver=letsencrypt
+      - traefik.http.services.evocrm-gateway.loadbalancer.server.port=3030
+
+  # ---------------------------------------------------------------------------
+  # Frontend (CRM web)
+  # ---------------------------------------------------------------------------
+  evocrm_frontend:
+    image: evoapicloud/evo-ai-frontend-community:latest
+    restart: unless-stopped
+    networks:
+      - internal
+      - easypanel
+    depends_on:
+      - evocrm_auth
+      - evocrm_crm
+    environment:
+      - VITE_APP_ENV=production
+      - VITE_API_URL=https://evocrm-gateway.znvdsb.easypanel.host
+      - VITE_AUTH_API_URL=https://evocrm-gateway.znvdsb.easypanel.host
+      - VITE_EVOAI_API_URL=https://evocrm-gateway.znvdsb.easypanel.host
+      - VITE_AGENT_PROCESSOR_URL=https://evocrm-gateway.znvdsb.easypanel.host
+      - VITE_WS_URL=https://evocrm-gateway.znvdsb.easypanel.host
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.evocrm-frontend.rule=Host(`evocrm-evocrm.znvdsb.easypanel.host`)
+      - traefik.http.routers.evocrm-frontend.entrypoints=websecure
+      - traefik.http.routers.evocrm-frontend.tls.certresolver=letsencrypt
+      - traefik.http.services.evocrm-frontend.loadbalancer.server.port=80
+
+networks:
+  internal:
+    driver: bridge
+  easypanel:
+    external: true
+
+volumes:
+  evocrm_postgres:
+  evocrm_redis:
+  evocrm_processor_logs:
